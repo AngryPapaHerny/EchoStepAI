@@ -1,0 +1,6 @@
+{
+  "name": "EchoStep AI",
+  "description": "AI 상황별 과업 수행 기반 (TBLT) 및 구두 성찰 언어 학습 (MALL) 웹앱",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
