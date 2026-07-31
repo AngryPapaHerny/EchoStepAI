@@ -1,0 +1,5 @@
+node_modules
+dist
+supabase
+assets/.aistudio
+metadata.json

@@ -54,13 +54,15 @@ export const HomeView: React.FC<HomeViewProps> = ({
               <Mic className="w-5 h-5 text-[#4fd1c5]" />
               롤플레이 시작
             </button>
-            <button
-              onClick={() => onOpenReflection(latestTicket)}
-              className="flex items-center justify-center gap-2 bg-[#4fd1c5]/20 text-[#006a63] w-full h-[50px] rounded-full font-semibold text-sm hover:bg-[#4fd1c5]/30 active:scale-[0.98] transition-all"
-            >
-              <Sparkles className="w-4 h-4 text-[#006a63]" />
-              AI 성찰 복습
-            </button>
+            {latestTicket && (
+              <button
+                onClick={() => onOpenReflection(latestTicket)}
+                className="flex items-center justify-center gap-2 bg-[#4fd1c5]/20 text-[#006a63] w-full h-[50px] rounded-full font-semibold text-sm hover:bg-[#4fd1c5]/30 active:scale-[0.98] transition-all"
+              >
+                <Sparkles className="w-4 h-4 text-[#006a63]" />
+                AI 성찰 복습
+              </button>
+            )}
           </div>
         </div>
       </section>
@@ -122,6 +124,19 @@ export const HomeView: React.FC<HomeViewProps> = ({
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {!latestTicket && (
+          <div className="bg-white border border-dashed border-[#bbc9c7]/60 rounded-2xl p-8 flex flex-col items-center text-center gap-2">
+            <div className="w-12 h-12 rounded-full bg-[#4fd1c5]/15 flex items-center justify-center text-[#006a63]">
+              <Mic className="w-6 h-6" />
+            </div>
+            <p className="text-sm font-bold text-[#181c1e]">첫 롤플레이를 시작해보세요</p>
+            <p className="text-xs text-[#3c4947] max-w-xs leading-relaxed">
+              대화를 마치면 AI가 실수 교정, 핵심 표현, CAF 지표를 담은
+              성찰 일지를 만들어 여기에 보여줍니다.
+            </p>
           </div>
         )}
 

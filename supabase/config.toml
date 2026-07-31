@@ -1,0 +1,4 @@
+project_id = "vkwrinqsjuchiulrgtxh"
+
+[functions.ai]
+verify_jwt = true

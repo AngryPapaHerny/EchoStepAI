@@ -1,18 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { Stars, Check, X, Volume2, Save, Home, Sparkles, Send, RefreshCw, Award } from 'lucide-react';
+import { Stars, Check, X, Volume2, Save, Home, Sparkles, RefreshCw, Award, AlertCircle } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { ExitTicket, ChatMessage, Scenario, UserProfile } from '../types';
-import { saveExitTicket } from '../lib/storage';
+import { ExitTicket, ExitTicketDraft, ChatMessage, Scenario, UserProfile } from '../types';
+import { saveExitTicket } from '../lib/db';
+import { requestExitTicketAnalysis } from '../lib/api';
 import { speechHandler } from '../lib/speech';
 
 interface ExitTicketModalProps {
+  /** 이미 저장된 티켓을 다시 볼 때 전달된다 (읽기 전용). */
   existingTicket?: ExitTicket | null;
   scenario?: Scenario;
-  user?: UserProfile;
+  user: UserProfile;
+  /** 방금 끝난 세션의 대화록. 있으면 AI 분석을 새로 생성한다. */
   transcript?: ChatMessage[];
   onClose: () => void;
-  onSaved: (ticket: ExitTicket) => void;
+  /** 저장이 끝나 상위에서 데이터를 다시 불러와야 할 때 호출된다. */
+  onSaved: () => void;
 }
+
+/** 저장 전 상태의 티켓 — AI 분석 결과에 화면 표시용 필드를 더한 것. */
+type DraftTicket = ExitTicketDraft;
 
 export const ExitTicketModal: React.FC<ExitTicketModalProps> = ({
   existingTicket,
@@ -22,10 +29,12 @@ export const ExitTicketModal: React.FC<ExitTicketModalProps> = ({
   onClose,
   onSaved
 }) => {
-  const [ticket, setTicket] = useState<ExitTicket | null>(existingTicket || null);
+  const [ticket, setTicket] = useState<ExitTicket | DraftTicket | null>(existingTicket ?? null);
   const [loading, setLoading] = useState<boolean>(!existingTicket);
   const [selfReflectionText, setSelfReflectionText] = useState<string>(existingTicket?.selfReflection || '');
   const [isSaved, setIsSaved] = useState<boolean>(!!existingTicket);
+  const [saving, setSaving] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Trigger celebration confetti on initial load
   useEffect(() => {
@@ -37,65 +46,93 @@ export const ExitTicketModal: React.FC<ExitTicketModalProps> = ({
     });
   }, []);
 
-  // Fetch or generate exit ticket if new session
+  // Generate exit ticket for a freshly finished session
   useEffect(() => {
     if (existingTicket) return;
 
+    let cancelled = false;
+
     async function generateTicket() {
       setLoading(true);
+      setError(null);
       try {
-        const response = await fetch('/api/chat/exit-ticket', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            scenarioTitle: scenario?.title || "Roleplay Task",
-            transcript: transcript || [],
-            userMajorOrJob: user?.majorOrJob || "General",
-            selfReflection: selfReflectionText
-          })
+        const data = await requestExitTicketAnalysis({
+          scenarioTitle: scenario?.title || 'Roleplay Task',
+          transcript: transcript || [],
+          userMajorOrJob: user.majorOrJob,
+          selfReflection: ''
         });
 
-        const data = await response.json();
+        if (cancelled) return;
 
-        const newTicket: ExitTicket = {
-          id: `ticket-${Date.now()}`,
+        const today = new Date().toISOString().split('T')[0];
+
+        setTicket({
           scenarioId: scenario?.id || 'custom',
           scenarioTitle: scenario?.titleKo || scenario?.title || '역할극 과업',
-          overallScore: data.overallScore || 88,
+          overallScore: data.overallScore ?? 88,
           fluencyLevel: data.fluencyLevel || 'Advanced',
           accuracyLevel: data.accuracyLevel || 'Good',
           topMistakes: data.topMistakes || [],
-          newExpressions: (data.newExpressions || []).map((exp: any, idx: number) => ({
-            id: `vocab-${Date.now()}-${idx}`,
+          newExpressions: (data.newExpressions || []).map((exp, idx) => ({
+            id: `draft-vocab-${idx}`,
             expression: exp.expression,
             meaning: exp.meaning,
             exampleSentence: exp.exampleSentence,
-            espCategory: exp.espCategory || user?.majorOrJob || 'General',
-            dateAdded: new Date().toISOString().split('T')[0]
+            espCategory: exp.espCategory || user.majorOrJob,
+            dateAdded: today
           })),
-          encouragement: data.encouragement || "Great job today! Your speaking confidence is visibly growing.",
+          encouragement:
+            data.encouragement || 'Great job today! Your speaking confidence is visibly growing.',
           cafData: data.cafData || { fluencyScore: 85, accuracyScore: 80, complexityScore: 78 },
-          selfReflection: selfReflectionText,
-          date: '오늘'
-        };
-
-        setTicket(newTicket);
+          selfReflection: ''
+        });
       } catch (err) {
-        console.error('Error fetching exit ticket:', err);
+        console.error('Error generating exit ticket:', err);
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? `AI 분석에 실패했습니다: ${err.message}`
+              : 'AI 분석에 실패했습니다.'
+          );
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
 
     generateTicket();
-  }, [existingTicket]);
+    return () => { cancelled = true; };
+  }, [existingTicket, scenario, transcript, user.majorOrJob]);
 
-  const handleSave = () => {
-    if (!ticket) return;
-    const updatedTicket = { ...ticket, selfReflection: selfReflectionText };
-    saveExitTicket(updatedTicket);
-    setIsSaved(true);
-    onSaved(updatedTicket);
+  const handleSave = async () => {
+    if (!ticket || saving || isSaved) return;
+
+    setSaving(true);
+    setError(null);
+    try {
+      await saveExitTicket({
+        scenarioId: ticket.scenarioId,
+        scenarioTitle: ticket.scenarioTitle,
+        overallScore: ticket.overallScore,
+        fluencyLevel: ticket.fluencyLevel,
+        accuracyLevel: ticket.accuracyLevel,
+        topMistakes: ticket.topMistakes,
+        newExpressions: ticket.newExpressions,
+        encouragement: ticket.encouragement,
+        cafData: ticket.cafData,
+        selfReflection: selfReflectionText
+      });
+      setIsSaved(true);
+      onSaved();
+    } catch (err) {
+      console.error('Error saving exit ticket:', err);
+      setError(
+        err instanceof Error ? `저장에 실패했습니다: ${err.message}` : '저장에 실패했습니다.'
+      );
+    } finally {
+      setSaving(false);
+    }
   };
 
   const playAudio = (text: string) => {
@@ -116,7 +153,25 @@ export const ExitTicketModal: React.FC<ExitTicketModalProps> = ({
     );
   }
 
-  if (!ticket) return null;
+  if (!ticket) {
+    return (
+      <div className="fixed inset-0 z-50 bg-[#f7fafc] flex flex-col items-center justify-center p-6 text-center space-y-4 max-w-2xl mx-auto shadow-2xl">
+        <div className="w-14 h-14 rounded-full bg-[#ffdad6] flex items-center justify-center text-[#ba1a1a]">
+          <AlertCircle className="w-7 h-7" />
+        </div>
+        <h2 className="text-lg font-bold text-[#181c1e]">성찰 일지를 만들지 못했습니다</h2>
+        <p className="text-xs text-[#3c4947] max-w-xs break-words">
+          {error ?? '잠시 후 다시 시도해주세요.'}
+        </p>
+        <button
+          onClick={onClose}
+          className="px-6 h-11 bg-[#006a63] text-white rounded-2xl font-bold text-xs"
+        >
+          홈으로 이동
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 bg-[#f7fafc] overflow-y-auto pb-28 max-w-2xl mx-auto shadow-2xl">
@@ -241,20 +296,36 @@ export const ExitTicketModal: React.FC<ExitTicketModalProps> = ({
           <textarea
             value={selfReflectionText}
             onChange={(e) => setSelfReflectionText(e.target.value)}
+            readOnly={isSaved}
             placeholder="예: 공항 상황에서 'I was wondering if...'를 사용하면 훨씬 부드럽게 요청할 수 있다는 점을 깨달았다."
-            className="w-full h-24 p-3 bg-[#f7fafc] border border-[#bbc9c7]/40 rounded-xl text-xs text-[#181c1e] focus:outline-none focus:border-[#006a63]"
+            className="w-full h-24 p-3 bg-[#f7fafc] border border-[#bbc9c7]/40 rounded-xl text-xs text-[#181c1e] focus:outline-none focus:border-[#006a63] read-only:text-[#3c4947] read-only:cursor-default"
           />
+          {isSaved && (
+            <p className="text-[11px] text-[#6c7a77]">
+              이미 저장된 성찰 일지입니다. 내용은 수정할 수 없습니다.
+            </p>
+          )}
         </section>
 
         {/* Action Buttons */}
         <section className="space-y-2.5 pt-2">
+          {error && (
+            <div className="bg-[#ffdad6] border border-[#ba1a1a]/30 p-3 rounded-xl flex items-start gap-2 text-xs text-[#93000a]">
+              <AlertCircle className="w-4 h-4 text-[#ba1a1a] shrink-0 mt-0.5" />
+              <span className="break-words">{error}</span>
+            </div>
+          )}
           <button
             onClick={handleSave}
-            disabled={isSaved}
+            disabled={isSaved || saving}
             className="w-full h-12 bg-[#006a63] text-white rounded-2xl font-semibold text-sm flex items-center justify-center gap-2 shadow-md hover:bg-[#005750] disabled:opacity-60 active:scale-[0.98] transition-all"
           >
-            <Save className="w-4 h-4" />
-            {isSaved ? '성찰 일지가 저장되었습니다' : '성찰 보고서 저장하기'}
+            {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {saving
+              ? '저장 중...'
+              : isSaved
+                ? '성찰 일지가 저장되었습니다'
+                : '성찰 보고서 저장하기'}
           </button>
           <button
             onClick={onClose}

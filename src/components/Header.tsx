@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bell, Sparkles } from 'lucide-react';
+import { Bell, LogOut, Sparkles } from 'lucide-react';
 import { UserProfile } from '../types';
 
 interface HeaderProps {
@@ -7,13 +7,15 @@ interface HeaderProps {
   title?: string;
   onProfileClick?: () => void;
   onNotificationClick?: () => void;
+  onSignOut?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   user,
   title,
   onProfileClick,
-  onNotificationClick
+  onNotificationClick,
+  onSignOut
 }) => {
   return (
     <header className="w-full sticky top-0 z-50 bg-[#f7fafc]/95 backdrop-blur-md h-16 flex justify-between items-center px-5 shadow-[0_4px_12px_rgba(49,151,149,0.08)] border-b border-[#bbc9c7]/20">
@@ -57,6 +59,16 @@ export const Header: React.FC<HeaderProps> = ({
           <Bell className="w-5 h-5 text-[#006a63]" />
           <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-[#ba1a1a]"></span>
         </button>
+        {onSignOut && (
+          <button
+            onClick={onSignOut}
+            className="w-10 h-10 flex items-center justify-center rounded-full text-[#3c4947] hover:bg-[#ffdad6] active:scale-95 transition-all"
+            aria-label="로그아웃"
+            title="로그아웃"
+          >
+            <LogOut className="w-5 h-5 text-[#3c4947]" />
+          </button>
+        )}
       </div>
     </header>
   );

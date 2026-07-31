@@ -2,6 +2,30 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, Mic, MicOff, Volume2, MessageSquare, Sparkles, Send, HelpCircle, Languages, CheckCircle, RefreshCw, AlertCircle } from 'lucide-react';
 import { Scenario, ChatMessage, ModeType, UserProfile } from '../types';
 import { speechHandler } from '../lib/speech';
+import { requestRoleplayTurn } from '../lib/api';
+
+/**
+ * 시나리오 목표로 첫 발화 제안을 만든다.
+ *
+ * 목표문은 학습자를 2인칭으로 지시하는 문장("Check in under your reservation name,
+ * and politely request ...")이라 그대로 쓸 수 없다. 첫 절만 떼어내고 인칭을
+ * 1인칭으로 바꿔 문법적으로 완결된 한 문장을 만든다.
+ * (이전에는 30자에서 잘라 "...to C..." 같은 깨진 문장을 AI에게 보냈다.)
+ */
+function buildOpeningSuggestions(scenario: Scenario): string[] {
+  const goal = scenario.defaultGoal.trim().replace(/\.+$/, '');
+  const firstClause = goal.split(/,|\s+and\s+/i)[0].trim();
+
+  const request = (firstClause.charAt(0).toLowerCase() + firstClause.slice(1))
+    .replace(/\byour\b/gi, 'my')
+    .replace(/\byou are\b/gi, 'I am');
+
+  return [
+    `Hello, I'd like to ${request}.`,
+    `Hi! Could you help me with ${scenario.title}?`,
+    `Excuse me, I have a quick question.`
+  ];
+}
 
 interface RoleplayScreenProps {
   scenario: Scenario;
@@ -77,11 +101,7 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
     };
 
     setMessages([initialMessage]);
-    setSuggestedReplies([
-      `Hello, I'd like to ${scenario.defaultGoal.slice(0, 30)}...`,
-      `Hi! Could you help me with ${scenario.title}?`,
-      `Excuse me, I have a quick question.`
-    ]);
+    setSuggestedReplies(buildOpeningSuggestions(scenario));
     setCurrentHint(`Tip: State your purpose clearly using "I'd like to..." or "Could you please..."`);
 
     // Speak AI greeting if voice mode
@@ -113,23 +133,13 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
     setNudgeCorrection(null);
 
     try {
-      const response = await fetch('/api/chat/roleplay', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          scenarioTitle: scenario.title,
-          scenarioGoal: scenario.defaultGoal,
-          aiRole: scenario.aiRole,
-          userRole: scenario.userRole,
-          userMajorOrJob: user.majorOrJob,
-          cefrLevel: user.cefrLevel,
-          conversationHistory: updatedMessages.map(m => ({ role: m.sender, text: m.text })),
-          userMessage: userMsgText,
-          mode
-        })
+      const data = await requestRoleplayTurn({
+        scenario,
+        user,
+        conversationHistory: updatedMessages,
+        userMessage: userMsgText,
+        mode
       });
-
-      const data = await response.json();
 
       const aiMessage: ChatMessage = {
         id: `msg-${Date.now() + 1}`,
@@ -322,7 +332,7 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
                       : 'bg-[#006a63] text-white rounded-tr-none'
                   }`}
                 >
-                  <p className="text-sm font-medium leading-relaxed italic md:not-italic">
+                  <p className="text-sm font-medium leading-relaxed italic md:not-italic break-words whitespace-pre-wrap">
                     "{msg.text}"
                   </p>
 
@@ -408,21 +418,26 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
         {/* Quick Hint & Helper Chips */}
         {currentHint && (
           <div className="bg-[#f1f4f6] px-3 py-1.5 rounded-lg text-xs text-[#3c4947] flex items-center justify-between">
-            <span className="flex items-center gap-1 line-clamp-1">
-              <HelpCircle className="w-3.5 h-3.5 text-[#006a63] shrink-0" />
-              <span className="font-medium text-[#006a63]">추천 힌트:</span> {currentHint}
+            <span className="flex items-start gap-1 break-words">
+              <HelpCircle className="w-3.5 h-3.5 text-[#006a63] shrink-0 mt-0.5" />
+              <span>
+                <span className="font-medium text-[#006a63]">추천 힌트:</span> {currentHint}
+              </span>
             </span>
           </div>
         )}
 
-        {/* Suggested Replies Quick Chips */}
+        {/*
+          Suggested Replies Quick Chips
+          제안 문장이 길어도 전체가 보이도록 줄바꿈시킨다 (가로 스크롤로 숨기지 않음).
+        */}
         {suggestedReplies.length > 0 && !isListening && (
-          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+          <div className="flex flex-wrap gap-2 pb-1 max-h-28 overflow-y-auto scrollbar-none">
             {suggestedReplies.map((reply, idx) => (
               <button
                 key={idx}
                 onClick={() => handleSendMessage(reply)}
-                className="px-3 py-1.5 bg-[#4fd1c5]/15 hover:bg-[#4fd1c5]/30 text-[#005750] rounded-full text-xs font-semibold whitespace-nowrap active:scale-95 transition-all shrink-0"
+                className="px-3 py-1.5 bg-[#4fd1c5]/15 hover:bg-[#4fd1c5]/30 text-[#005750] rounded-full text-xs font-semibold text-left break-words active:scale-95 transition-all"
               >
                 💡 {reply}
               </button>

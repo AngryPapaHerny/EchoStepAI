@@ -1,4 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
+import { AlertCircle, Loader2, RefreshCw } from 'lucide-react';
+
 import { Header } from './components/Header';
 import { BottomNav, TabType } from './components/BottomNav';
 import { HomeView } from './components/HomeView';
@@ -8,81 +11,123 @@ import { ExitTicketModal } from './components/ExitTicketModal';
 import { ReviewView } from './components/ReviewView';
 import { ProfileView } from './components/ProfileView';
 import { CustomScenarioModal } from './components/CustomScenarioModal';
+import { AuthScreen } from './components/AuthScreen';
 
 import { SCENARIOS } from './data/scenarios';
-import {
-  getUserProfile,
-  getExitTickets,
-  getVocabulary,
-  getCAFHistory
-} from './lib/storage';
-import { Scenario, ExitTicket, ModeType, UserProfile, VocabularyItem, ChatMessage } from './types';
+import { supabase } from './lib/supabase';
+import { fetchLearnerData, LearnerData } from './lib/db';
+import { ChatMessage, ExitTicket, ModeType, Scenario } from './types';
 
 export default function App() {
-  const [user, setUser] = useState<UserProfile>(getUserProfile());
-  const [scenarios, setScenarios] = useState<Scenario[]>(SCENARIOS);
-  const [exitTickets, setExitTickets] = useState<ExitTicket[]>(getExitTickets());
-  const [vocabularyList, setVocabularyList] = useState<VocabularyItem[]>(getVocabulary());
-  const [cafHistory] = useState(getCAFHistory());
+  // ── 인증 세션 ────────────────────────────────────────────
+  const [session, setSession] = useState<Session | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthChecked(true);
+    });
+
+    const { data: subscription } = supabase.auth.onAuthStateChange(
+      (_event, nextSession) => {
+        setSession(nextSession);
+        setAuthChecked(true);
+      }
+    );
+
+    return () => subscription.subscription.unsubscribe();
+  }, []);
+
+  // ── 학습자 데이터 ────────────────────────────────────────
+  const [data, setData] = useState<LearnerData | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const userId = session?.user.id ?? null;
+
+  const loadData = useCallback(async () => {
+    setLoadError(null);
+    try {
+      setData(await fetchLearnerData());
+    } catch (err) {
+      console.error('Failed to load learner data:', err);
+      setLoadError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!userId) {
+      setData(null);
+      return;
+    }
+    loadData();
+  }, [userId, loadData]);
+
+  // ── 화면 상태 ────────────────────────────────────────────
+  const [scenarios, setScenarios] = useState<Scenario[]>(SCENARIOS);
   const [activeTab, setActiveTab] = useState<TabType>('home');
   const [activeScenario, setActiveScenario] = useState<Scenario | null>(null);
   const [activeRoleplayMode, setActiveRoleplayMode] = useState<ModeType>('voice');
   const [activeExitTicket, setActiveExitTicket] = useState<ExitTicket | null>(null);
-  const [showCustomModal, setShowCustomModal] = useState<boolean>(false);
+  const [showCustomModal, setShowCustomModal] = useState(false);
   const [activeTranscript, setActiveTranscript] = useState<ChatMessage[] | null>(null);
 
-  // Today's recommended challenge scenario
-  const todaysScenario = scenarios.find(s => s.id === 'hotel') || scenarios[0];
-
-  // Start a Roleplay Session
   const handleStartRoleplay = (scenario: Scenario, mode: ModeType = 'voice') => {
     setActiveScenario(scenario);
     setActiveRoleplayMode(mode);
     setActiveTranscript(null);
   };
 
-  // Finish Roleplay -> Open AI Exit Ticket modal
-  const handleFinishRoleplaySession = (transcript: ChatMessage[], selfReflection?: string) => {
-    setActiveTranscript(transcript);
-    setActiveExitTicket(null); // Will generate a new ticket inside modal
-  };
-
-  // When exit ticket is saved
-  const handleSavedExitTicket = (newTicket: ExitTicket) => {
-    setExitTickets(getExitTickets());
-    setVocabularyList(getVocabulary());
-    setUser(getUserProfile());
-  };
-
-  // Custom scenario creation handler
   const handleCreateCustomScenario = (newScenario: Scenario) => {
-    setScenarios(prev => [newScenario, ...prev]);
+    setScenarios((prev) => [newScenario, ...prev]);
     setShowCustomModal(false);
     handleStartRoleplay(newScenario, 'voice');
   };
 
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setActiveTab('home');
+    setActiveScenario(null);
+    setActiveTranscript(null);
+    setActiveExitTicket(null);
+  };
+
+  // ── 렌더링 ───────────────────────────────────────────────
+  if (!authChecked) return <FullScreenSpinner label="세션을 확인하는 중..." />;
+  if (!session) return <AuthScreen />;
+
+  if (loadError) {
+    return (
+      <FullScreenError message={loadError} onRetry={loadData} onSignOut={handleSignOut} />
+    );
+  }
+
+  if (!data) return <FullScreenSpinner label="학습 기록을 불러오는 중..." />;
+
+  const { profile, exitTickets, vocabulary, cafHistory } = data;
+  const todaysScenario = scenarios.find((s) => s.id === 'hotel') ?? scenarios[0];
+  const isFullscreenFlow = Boolean(activeScenario || activeTranscript);
+
   return (
     <div className="min-h-screen bg-[#f7fafc] text-[#181c1e] font-sans antialiased selection:bg-[#4fd1c5]/30">
-      {/* App Header (Hidden during live roleplay fullscreen) */}
-      {!activeScenario && !activeTranscript && (
+      {!isFullscreenFlow && (
         <Header
-          user={user}
+          user={profile}
           onProfileClick={() => setActiveTab('profile')}
           onNotificationClick={() => setActiveTab('review')}
+          onSignOut={handleSignOut}
         />
       )}
 
-      {/* Main Tab Views */}
-      {!activeScenario && !activeTranscript && (
+      {!isFullscreenFlow && (
         <main>
           {activeTab === 'home' && (
             <HomeView
-              user={user}
+              user={profile}
               todaysScenario={todaysScenario}
               recentTickets={exitTickets}
-              onStartRoleplay={(s) => handleStartRoleplay(s, 'voice')}
-              onOpenReflection={(t) => setActiveExitTicket(t || exitTickets[0])}
+              onStartRoleplay={(s) => handleStartRoleplay(s, profile.preferredMode)}
+              onOpenReflection={(t) => setActiveExitTicket(t ?? exitTickets[0] ?? null)}
               onNavigateTab={(tab) => setActiveTab(tab)}
             />
           )}
@@ -90,8 +135,8 @@ export default function App() {
           {activeTab === 'practice' && (
             <PracticeGrid
               scenarios={scenarios}
-              preferredMode={user.preferredMode}
-              userMajor={user.majorOrJob}
+              preferredMode={profile.preferredMode}
+              userMajor={profile.majorOrJob}
               onSelectScenario={(s, mode) => handleStartRoleplay(s, mode)}
               onCreateCustomScenario={() => setShowCustomModal(true)}
             />
@@ -99,58 +144,54 @@ export default function App() {
 
           {activeTab === 'review' && (
             <ReviewView
+              user={profile}
               exitTickets={exitTickets}
-              vocabularyList={vocabularyList}
-              userMajor={user.majorOrJob}
+              vocabularyList={vocabulary}
               onOpenTicket={(t) => setActiveExitTicket(t)}
-              onUpdateVocabulary={(updated) => setVocabularyList(updated)}
+              onVocabularyChanged={loadData}
             />
           )}
 
           {activeTab === 'profile' && (
             <ProfileView
-              user={user}
+              user={profile}
               cafHistory={cafHistory}
-              onProfileUpdate={(updated) => setUser(updated)}
+              onProfileUpdated={loadData}
             />
           )}
 
-          {/* Bottom Nav Bar */}
           <BottomNav activeTab={activeTab} onTabChange={(tab) => setActiveTab(tab)} />
         </main>
       )}
 
-      {/* Fullscreen Interactive Roleplay Screen */}
       {activeScenario && !activeTranscript && (
         <RoleplayScreen
           scenario={activeScenario}
-          user={user}
+          user={profile}
           initialMode={activeRoleplayMode}
           onClose={() => setActiveScenario(null)}
-          onFinishSession={(transcript) => handleFinishRoleplaySession(transcript)}
+          onFinishSession={(transcript) => setActiveTranscript(transcript)}
         />
       )}
 
-      {/* AI Exit Ticket & Self-Reflection Modal */}
       {(activeTranscript || activeExitTicket) && (
         <ExitTicketModal
           existingTicket={activeExitTicket}
-          scenario={activeScenario || undefined}
-          user={user}
-          transcript={activeTranscript || undefined}
+          scenario={activeScenario ?? undefined}
+          user={profile}
+          transcript={activeTranscript ?? undefined}
           onClose={() => {
             setActiveTranscript(null);
             setActiveExitTicket(null);
             setActiveScenario(null);
           }}
-          onSaved={handleSavedExitTicket}
+          onSaved={loadData}
         />
       )}
 
-      {/* Custom Scenario Creation Modal */}
       {showCustomModal && (
         <CustomScenarioModal
-          userMajor={user.majorOrJob}
+          userMajor={profile.majorOrJob}
           onClose={() => setShowCustomModal(false)}
           onCreate={handleCreateCustomScenario}
         />
@@ -158,3 +199,40 @@ export default function App() {
     </div>
   );
 }
+
+const FullScreenSpinner: React.FC<{ label: string }> = ({ label }) => (
+  <div className="min-h-screen bg-[#f7fafc] flex flex-col items-center justify-center gap-3">
+    <Loader2 className="w-8 h-8 text-[#006a63] animate-spin" />
+    <p className="text-xs text-[#3c4947]">{label}</p>
+  </div>
+);
+
+const FullScreenError: React.FC<{
+  message: string;
+  onRetry: () => void;
+  onSignOut: () => void;
+}> = ({ message, onRetry, onSignOut }) => (
+  <div className="min-h-screen bg-[#f7fafc] flex flex-col items-center justify-center gap-4 px-6 text-center">
+    <div className="w-14 h-14 rounded-full bg-[#ffdad6] flex items-center justify-center text-[#ba1a1a]">
+      <AlertCircle className="w-7 h-7" />
+    </div>
+    <div className="space-y-1">
+      <h2 className="text-lg font-bold text-[#181c1e]">학습 기록을 불러오지 못했습니다</h2>
+      <p className="text-xs text-[#3c4947] max-w-xs break-words">{message}</p>
+    </div>
+    <div className="flex gap-2">
+      <button
+        onClick={onRetry}
+        className="px-5 h-11 bg-[#006a63] text-white rounded-2xl font-bold text-xs flex items-center gap-2"
+      >
+        <RefreshCw className="w-4 h-4" /> 다시 시도
+      </button>
+      <button
+        onClick={onSignOut}
+        className="px-5 h-11 border border-[#bbc9c7] text-[#3c4947] rounded-2xl font-bold text-xs"
+      >
+        로그아웃
+      </button>
+    </div>
+  </div>
+);

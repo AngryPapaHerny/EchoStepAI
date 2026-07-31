@@ -1,30 +1,43 @@
-import React, { useState } from 'react';
-import { History, Volume2, Brain, Zap, Star, BookOpen, Check, Filter, Calendar } from 'lucide-react';
-import { ExitTicket, VocabularyItem, ESPCategory } from '../types';
-import { toggleVocabularyMastered } from '../lib/storage';
+import React, { useMemo, useState } from 'react';
+import { Volume2, Brain, BookOpen, Check } from 'lucide-react';
+import { ExitTicket, UserProfile, VocabularyItem } from '../types';
+import { setVocabularyMastered } from '../lib/db';
 import { speechHandler } from '../lib/speech';
 
 interface ReviewViewProps {
+  user: UserProfile;
   exitTickets: ExitTicket[];
   vocabularyList: VocabularyItem[];
-  userMajor: ESPCategory;
   onOpenTicket: (ticket: ExitTicket) => void;
-  onUpdateVocabulary: (updatedList: VocabularyItem[]) => void;
+  /** 어휘 상태가 바뀌어 상위에서 데이터를 다시 불러와야 할 때 호출된다. */
+  onVocabularyChanged: () => void;
 }
 
+const KOREAN_WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'] as const;
+
 export const ReviewView: React.FC<ReviewViewProps> = ({
+  user,
   exitTickets,
   vocabularyList,
-  userMajor,
   onOpenTicket,
-  onUpdateVocabulary
+  onVocabularyChanged
 }) => {
+  const userMajor = user.majorOrJob;
   const [activeTab, setActiveTab] = useState<'history' | 'vocab'>('history');
   const [selectedEspCategory, setSelectedEspCategory] = useState<string>('all');
+  const [pendingVocabId, setPendingVocabId] = useState<string | null>(null);
 
-  const handleToggleMastered = (id: string) => {
-    const updated = toggleVocabularyMastered(id);
-    onUpdateVocabulary(updated);
+  const handleToggleMastered = async (item: VocabularyItem) => {
+    if (pendingVocabId) return;
+    setPendingVocabId(item.id);
+    try {
+      await setVocabularyMastered(item.id, !item.mastered);
+      onVocabularyChanged();
+    } catch (err) {
+      console.error('Failed to update vocabulary:', err);
+    } finally {
+      setPendingVocabId(null);
+    }
   };
 
   const playAudio = (text: string) => {
@@ -36,6 +49,31 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
     if (selectedEspCategory === 'major') return item.espCategory === userMajor;
     return item.espCategory.toLowerCase() === selectedEspCategory.toLowerCase();
   });
+
+  /** 최근 7일간 요일별 세션 수 (주간 학습 활동 차트용) */
+  const weeklyActivity = useMemo(() => {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const days = Array.from({ length: 7 }, (_, offset) => {
+      const date = new Date(startOfToday);
+      date.setDate(date.getDate() - (6 - offset));
+      return { date, label: KOREAN_WEEKDAYS[date.getDay()], count: 0 };
+    });
+
+    for (const ticket of exitTickets) {
+      const created = new Date(ticket.createdAt);
+      created.setHours(0, 0, 0, 0);
+      const slot = days.find(d => d.date.getTime() === created.getTime());
+      if (slot) slot.count += 1;
+    }
+
+    const max = Math.max(1, ...days.map(d => d.count));
+    return days.map(d => ({ ...d, ratio: d.count / max }));
+  }, [exitTickets]);
+
+  const totalStudyHours = Math.floor(user.totalStudyMinutes / 60);
+  const masteredCount = vocabularyList.filter(v => v.mastered).length;
 
   return (
     <div className="px-5 pt-4 pb-28 space-y-6 max-w-2xl mx-auto">
@@ -52,14 +90,16 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
         <div className="bg-white p-4 rounded-2xl shadow-[0_4px_12px_rgba(49,151,149,0.08)] border border-[#bbc9c7]/20">
           <p className="text-xs text-[#3c4947] mb-1">총 학습 시간</p>
           <div className="flex items-end gap-1">
-            <span className="text-2xl font-bold text-[#006a63]">12</span>
-            <span className="text-xs font-semibold text-[#181c1e] pb-0.5">시간</span>
+            <span className="text-2xl font-bold text-[#006a63]">{totalStudyHours}</span>
+            <span className="text-xs font-semibold text-[#181c1e] pb-0.5">
+              시간 {user.totalStudyMinutes % 60}분
+            </span>
           </div>
         </div>
         <div className="bg-white p-4 rounded-2xl shadow-[0_4px_12px_rgba(49,151,149,0.08)] border border-[#bbc9c7]/20">
           <p className="text-xs text-[#3c4947] mb-1">완료한 대화</p>
           <div className="flex items-end gap-1">
-            <span className="text-2xl font-bold text-[#006a63]">{exitTickets.length + 45}</span>
+            <span className="text-2xl font-bold text-[#006a63]">{user.completedSessionsCount}</span>
             <span className="text-xs font-semibold text-[#181c1e] pb-0.5">개</span>
           </div>
         </div>
@@ -92,6 +132,13 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
       {/* Tab 1: Conversation History */}
       {activeTab === 'history' && (
         <div className="space-y-4">
+          {exitTickets.length === 0 && (
+            <EmptyState
+              title="아직 완료한 과업이 없습니다"
+              description="'상황 선택'에서 시나리오를 골라 첫 롤플레이를 마치면 AI 성찰 일지가 여기에 쌓입니다."
+            />
+          )}
+
           <div className="space-y-3">
             {exitTickets.map((ticket) => (
               <div
@@ -143,20 +190,20 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
 
           {/* Weekly Progress Mini Chart */}
           <section className="bg-white p-5 rounded-2xl shadow-[0_4px_12px_rgba(49,151,149,0.08)] space-y-4">
-            <h3 className="font-bold text-base text-[#181c1e]">주간 학습 활동 (발화 수)</h3>
+            <h3 className="font-bold text-base text-[#181c1e]">주간 학습 활동 (완료한 과업 수)</h3>
             <div className="flex justify-between items-end h-28 px-2">
-              {[
-                { day: '월', height: '40%', bg: 'bg-[#dfe0e0]' },
-                { day: '화', height: '85%', bg: 'bg-[#006a63]' },
-                { day: '수', height: '30%', bg: 'bg-[#dfe0e0]' },
-                { day: '목', height: '60%', bg: 'bg-[#006a63]' },
-                { day: '금', height: '95%', bg: 'bg-[#4fd1c5]' },
-                { day: '토', height: '20%', bg: 'bg-[#dfe0e0]' },
-                { day: '일', height: '10%', bg: 'bg-[#bbc9c7]/30' }
-              ].map((item, idx) => (
+              {weeklyActivity.map((item, idx) => (
                 <div key={idx} className="flex flex-col items-center gap-1.5">
-                  <div className={`w-7 ${item.bg} rounded-t-lg transition-all duration-700`} style={{ height: item.height }} />
-                  <span className="text-xs text-[#3c4947]">{item.day}</span>
+                  <span className="text-[10px] font-bold text-[#006a63] h-3">
+                    {item.count > 0 ? item.count : ''}
+                  </span>
+                  <div
+                    className={`w-7 rounded-t-lg transition-all duration-700 ${
+                      item.count > 0 ? 'bg-[#006a63]' : 'bg-[#dfe0e0]'
+                    }`}
+                    style={{ height: `${Math.max(item.ratio * 100, 6)}%` }}
+                  />
+                  <span className="text-xs text-[#3c4947]">{item.label}</span>
                 </div>
               ))}
             </div>
@@ -167,6 +214,13 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
       {/* Tab 2: Vocabulary & ESP Expression Repository */}
       {activeTab === 'vocab' && (
         <div className="space-y-4">
+          {vocabularyList.length > 0 && (
+            <p className="text-xs text-[#3c4947]">
+              총 {vocabularyList.length}개 중{' '}
+              <span className="font-bold text-[#006a63]">{masteredCount}개</span> 암기 완료
+            </p>
+          )}
+
           {/* Filter Chips */}
           <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
             {[
@@ -190,6 +244,21 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
               </button>
             ))}
           </div>
+
+          {filteredVocab.length === 0 && (
+            <EmptyState
+              title={
+                vocabularyList.length === 0
+                  ? '아직 저장된 표현이 없습니다'
+                  : '이 분야에 해당하는 표현이 없습니다'
+              }
+              description={
+                vocabularyList.length === 0
+                  ? '롤플레이를 마치고 성찰 일지를 저장하면 AI가 뽑아낸 핵심 표현이 자동으로 쌓입니다.'
+                  : '다른 ESP 분야 필터를 선택해보세요.'
+              }
+            />
+          )}
 
           {/* Vocabulary List */}
           <div className="space-y-3">
@@ -218,8 +287,9 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
                 </div>
 
                 <button
-                  onClick={() => handleToggleMastered(vocab.id)}
-                  className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 transition-all ${
+                  onClick={() => handleToggleMastered(vocab)}
+                  disabled={pendingVocabId === vocab.id}
+                  className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 transition-all disabled:opacity-50 ${
                     vocab.mastered
                       ? 'bg-[#006a63] text-white'
                       : 'border border-[#bbc9c7] text-[#bbc9c7] hover:border-[#006a63]'
@@ -236,3 +306,16 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
     </div>
   );
 };
+
+const EmptyState: React.FC<{ title: string; description: string }> = ({
+  title,
+  description
+}) => (
+  <div className="bg-white border border-dashed border-[#bbc9c7]/60 rounded-2xl p-8 flex flex-col items-center text-center gap-2">
+    <div className="w-12 h-12 rounded-full bg-[#4fd1c5]/15 flex items-center justify-center text-[#006a63]">
+      <BookOpen className="w-6 h-6" />
+    </div>
+    <p className="text-sm font-bold text-[#181c1e]">{title}</p>
+    <p className="text-xs text-[#3c4947] max-w-xs leading-relaxed">{description}</p>
+  </div>
+);

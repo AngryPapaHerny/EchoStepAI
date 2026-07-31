@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+
+.vercel
+.claude/
+
+# Supabase CLI 로컬 상태
+supabase/.branches
+supabase/.temp
