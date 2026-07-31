@@ -6,7 +6,7 @@
  */
 
 const API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
-const MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.6-flash";
+const MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.1-flash-lite";
 
 /** GEMINI_API_KEY 시크릿이 등록되지 않았으면 각 핸들러는 데모 응답으로 폴백한다. */
 export function hasGeminiKey(): boolean {

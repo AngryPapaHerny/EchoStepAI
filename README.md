@@ -82,7 +82,8 @@ npm run fn:deploy
 npx supabase secrets set GEMINI_API_KEY=... --project-ref vkwrinqsjuchiulrgtxh
 ```
 
-`GEMINI_MODEL` 시크릿으로 모델을 바꿀 수 있다 (기본값 `gemini-3.6-flash`).
+`GEMINI_MODEL` 시크릿으로 모델을 바꿀 수 있다 (기본값 `gemini-3.1-flash-lite`).
+시크릿만 바꾸면 되며 함수 재배포는 필요 없다.
 
 스키마를 수정했다면 프론트 타입도 다시 생성한다.
 
