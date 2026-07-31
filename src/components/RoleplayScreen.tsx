@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, Mic, MicOff, Volume2, MessageSquare, Sparkles, Send, HelpCircle, Languages, CheckCircle, RefreshCw, AlertCircle } from 'lucide-react';
 import { Scenario, ChatMessage, ModeType, UserProfile } from '../types';
 import { speechHandler } from '../lib/speech';
-import { requestRoleplayTurn } from '../lib/api';
+import { requestRoleplayTurn, requestTranslation } from '../lib/api';
 
 /**
  * 시나리오 목표로 첫 발화 제안을 만든다.
@@ -52,11 +52,22 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
   const [currentHint, setCurrentHint] = useState<string>('');
   const [suggestedReplies, setSuggestedReplies] = useState<string[]>([]);
   const [showTranslationMap, setShowTranslationMap] = useState<Record<string, boolean>>({});
+  // 학습자 메시지는 번역을 요청해야 하므로 메시지별 진행/오류 상태를 따로 둔다.
+  const [translatingIds, setTranslatingIds] = useState<Record<string, boolean>>({});
+  const [translationErrors, setTranslationErrors] = useState<Record<string, string>>({});
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [timerSeconds, setTimerSeconds] = useState<number>(300); // 5 minute default countdown
   const [nudgeCorrection, setNudgeCorrection] = useState<string | null>(null);
   const [speechError, setSpeechError] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  /** 재생을 멈추고 "재생 중" 표시도 함께 내린다. */
+  const stopPlayback = () => {
+    speechHandler.stopSpeaking();
+    setSpeakingMessageId(null);
+    setIsAiSpeaking(false);
+  };
 
   // Stop speech synthesis & recognition on unmount
   useEffect(() => {
@@ -106,8 +117,7 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
 
     // Speak AI greeting if voice mode
     if (mode === 'voice') {
-      setIsAiSpeaking(true);
-      speechHandler.speakText(initialAiText, 0.95, () => setIsAiSpeaking(false));
+      playAudioForMessage(initialMessage);
     }
   }, [scenario]);
 
@@ -115,7 +125,7 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
   const handleSendMessage = async (userMsgText: string) => {
     if (!userMsgText.trim() || isLoading) return;
 
-    speechHandler.stopSpeaking();
+    stopPlayback();
     speechHandler.stopListening();
     setIsListening(false);
 
@@ -157,8 +167,7 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
 
       // Play audio response in voice mode
       if (mode === 'voice') {
-        setIsAiSpeaking(true);
-        speechHandler.speakText(aiMessage.text, 0.95, () => setIsAiSpeaking(false));
+        playAudioForMessage(aiMessage);
       }
 
     } catch (err) {
@@ -187,7 +196,7 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
         setSpeechError('이 브라우저에서는 음성 인식이 지원되지 않습니다. Chrome, Edge 또는 Safari를 권장합니다.');
         return;
       }
-      speechHandler.stopSpeaking();
+      stopPlayback();
       setIsListening(true);
       speechHandler.startListening(
         (transcriptText, isFinal) => {
@@ -214,15 +223,61 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
     }
   };
 
-  // Toggle Translation for specific message
-  const toggleTranslation = (id: string) => {
-    setShowTranslationMap(prev => ({ ...prev, [id]: !prev[id] }));
+  /**
+   * 번역 토글.
+   *
+   * AI 메시지는 응답에 koreanTranslation이 함께 오지만, 학습자가 직접 입력한
+   * 메시지에는 번역이 없다. 처음 펼칠 때 한 번만 번역을 받아 메시지에 캐시하고
+   * 이후에는 재요청하지 않는다.
+   */
+  const toggleTranslation = async (msg: ChatMessage) => {
+    const willShow = !showTranslationMap[msg.id];
+    setShowTranslationMap(prev => ({ ...prev, [msg.id]: willShow }));
+
+    if (!willShow || msg.translation || translatingIds[msg.id]) return;
+
+    setTranslatingIds(prev => ({ ...prev, [msg.id]: true }));
+    setTranslationErrors(prev => {
+      const next = { ...prev };
+      delete next[msg.id];
+      return next;
+    });
+
+    try {
+      const { translation } = await requestTranslation(msg.text);
+      setMessages(prev =>
+        prev.map(m => (m.id === msg.id ? { ...m, translation } : m))
+      );
+    } catch (err) {
+      console.error('Translation failed:', err);
+      setTranslationErrors(prev => ({
+        ...prev,
+        [msg.id]: '번역을 가져오지 못했습니다. 다시 시도해주세요.'
+      }));
+    } finally {
+      setTranslatingIds(prev => {
+        const next = { ...prev };
+        delete next[msg.id];
+        return next;
+      });
+    }
   };
 
-  // Play audio for a specific message text
-  const playAudioForText = (text: string) => {
-    setIsAiSpeaking(true);
-    speechHandler.speakText(text, 0.95, () => setIsAiSpeaking(false));
+  /**
+   * 특정 메시지의 발음 재생.
+   *
+   * AI 발화일 때만 아바타의 "말하는 중" 표시를 켠다. 학습자 본인 문장을
+   * 들을 때 AI가 말하는 것처럼 보이면 안 되기 때문이다.
+   */
+  const playAudioForMessage = (msg: ChatMessage) => {
+    stopPlayback();
+    setSpeakingMessageId(msg.id);
+    if (msg.sender === 'ai') setIsAiSpeaking(true);
+
+    speechHandler.speakText(msg.text, 0.95, () => {
+      setSpeakingMessageId(current => (current === msg.id ? null : current));
+      if (msg.sender === 'ai') setIsAiSpeaking(false);
+    });
   };
 
   return (
@@ -253,7 +308,7 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
             onClick={() => {
               const newMode = mode === 'voice' ? 'text' : 'voice';
               setMode(newMode);
-              if (newMode === 'text') speechHandler.stopSpeaking();
+              if (newMode === 'text') stopPlayback();
             }}
             className="px-2.5 py-1 rounded-full text-xs font-semibold bg-[#4fd1c5]/20 text-[#005750] flex items-center gap-1"
           >
@@ -319,6 +374,9 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
           {messages.map((msg) => {
             const isAi = msg.sender === 'ai';
             const showTrans = showTranslationMap[msg.id];
+            const isTranslating = translatingIds[msg.id];
+            const translationError = translationErrors[msg.id];
+            const isSpeaking = speakingMessageId === msg.id;
 
             return (
               <div
@@ -336,32 +394,48 @@ export const RoleplayScreen: React.FC<RoleplayScreenProps> = ({
                     "{msg.text}"
                   </p>
 
-                  {/* Translation if available */}
-                  {isAi && (
-                    <>
-                      {showTrans && msg.translation && (
-                        <p className="text-xs text-[#006a63] font-normal pt-1 border-t border-[#f1f4f6]">
-                          {msg.translation}
-                        </p>
+                  {/* 번역 결과 — 학습자 메시지는 요청해서 받아온다 */}
+                  {showTrans && (isTranslating || translationError || msg.translation) && (
+                    <p
+                      className={`text-xs font-normal pt-1 border-t break-words ${
+                        isAi
+                          ? 'text-[#006a63] border-[#f1f4f6]'
+                          : 'text-[#94f2f0] border-white/25'
+                      }`}
+                    >
+                      {isTranslating ? (
+                        <span className="inline-flex items-center gap-1">
+                          <RefreshCw className="w-3 h-3 animate-spin" /> 번역하는 중...
+                        </span>
+                      ) : (
+                        translationError ?? msg.translation
                       )}
-
-                      <div className="flex items-center gap-2 pt-1">
-                        <button
-                          onClick={() => toggleTranslation(msg.id)}
-                          className="text-[11px] text-[#006a63] font-semibold underline flex items-center gap-1"
-                        >
-                          <Languages className="w-3 h-3" />
-                          {showTrans ? '번역 숨기기' : '한국어 번역'}
-                        </button>
-                        <button
-                          onClick={() => playAudioForText(msg.text)}
-                          className="text-[11px] text-[#3c4947] hover:text-[#006a63] flex items-center gap-1"
-                        >
-                          <Volume2 className="w-3 h-3" /> 발음 듣기
-                        </button>
-                      </div>
-                    </>
+                    </p>
                   )}
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      onClick={() => toggleTranslation(msg)}
+                      disabled={isTranslating}
+                      className={`text-[11px] font-semibold underline flex items-center gap-1 disabled:opacity-60 ${
+                        isAi ? 'text-[#006a63]' : 'text-[#94f2f0]'
+                      }`}
+                    >
+                      <Languages className="w-3 h-3" />
+                      {showTrans ? '번역 숨기기' : '한국어 번역'}
+                    </button>
+                    <button
+                      onClick={() => playAudioForMessage(msg)}
+                      className={`text-[11px] flex items-center gap-1 ${
+                        isAi
+                          ? 'text-[#3c4947] hover:text-[#006a63]'
+                          : 'text-white/80 hover:text-white'
+                      }`}
+                    >
+                      <Volume2 className={`w-3 h-3 ${isSpeaking ? 'animate-pulse' : ''}`} />
+                      {isSpeaking ? '재생 중...' : '발음 듣기'}
+                    </button>
+                  </div>
                 </div>
                 <span className="text-[10px] text-[#6c7a77] px-1 mt-0.5">{msg.timestamp}</span>
               </div>
