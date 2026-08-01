@@ -10,6 +10,7 @@ import { supabase } from './supabase';
 import type {
   AccuracyLevel,
   CAFData,
+  CEFRLevel,
   ChatMessage,
   ESPCategory,
   FluencyLevel,
@@ -90,6 +91,8 @@ export function requestExitTicketAnalysis(params: {
   scenarioTitle: string;
   transcript: ChatMessage[];
   userMajorOrJob: ESPCategory;
+  /** 채점은 원어민이 아니라 이 레벨의 기대 수준을 기준으로 이뤄진다. */
+  cefrLevel: CEFRLevel;
   selfReflection: string;
 }): Promise<ExitTicketAnalysis> {
   return invoke<ExitTicketAnalysis>('exit-ticket', {
@@ -99,6 +102,7 @@ export function requestExitTicketAnalysis(params: {
       text: m.text,
     })),
     userMajorOrJob: params.userMajorOrJob,
+    cefrLevel: params.cefrLevel,
     selfReflection: params.selfReflection,
   });
 }

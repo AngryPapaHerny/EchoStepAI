@@ -60,6 +60,7 @@ export const ExitTicketModal: React.FC<ExitTicketModalProps> = ({
           scenarioTitle: scenario?.title || 'Roleplay Task',
           transcript: transcript || [],
           userMajorOrJob: user.majorOrJob,
+          cefrLevel: user.cefrLevel,
           selfReflection: ''
         });
 
@@ -103,7 +104,7 @@ export const ExitTicketModal: React.FC<ExitTicketModalProps> = ({
 
     generateTicket();
     return () => { cancelled = true; };
-  }, [existingTicket, scenario, transcript, user.majorOrJob]);
+  }, [existingTicket, scenario, transcript, user.majorOrJob, user.cefrLevel]);
 
   const handleSave = async () => {
     if (!ticket || saving || isSaved) return;

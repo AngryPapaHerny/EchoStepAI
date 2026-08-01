@@ -13,19 +13,66 @@ export function hasGeminiKey(): boolean {
   return API_KEY.length > 0;
 }
 
+/** 이전 대화 한 턴. Gemini 의 role 규약을 그대로 쓴다(AI 는 "model"). */
+export interface HistoryTurn {
+  role: "user" | "model";
+  text: string;
+}
+
 export interface GenerateOptions {
+  /** 이번 턴의 사용자 입력. contents 의 마지막 user 파트가 된다. */
   prompt: string;
+  /**
+   * 이전 대화 턴. 하나의 문자열로 이어붙이지 않고 실제 role 턴으로 보낸다.
+   * 모델이 화자를 혼동하지 않고, 공통 접두사에 프롬프트 캐시가 걸린다.
+   */
+  history?: HistoryTurn[];
   systemInstruction?: string;
   /** OpenAPI 형식 스키마. 지정하면 JSON 모드로 응답한다. */
   responseSchema?: Record<string, unknown>;
+}
+
+/**
+ * Gemini 는 contents 가 user 턴으로 시작하고 role 이 번갈아 나오기를 기대한다.
+ * 우리 대화는 AI 인사말로 시작할 수 있으므로 그 형태로 맞춰준다.
+ */
+function normalizeHistory(history: HistoryTurn[]): HistoryTurn[] {
+  const turns: HistoryTurn[] = [];
+
+  for (const turn of history) {
+    if (!turn.text) continue;
+
+    const previous = turns[turns.length - 1];
+    if (previous && previous.role === turn.role) {
+      previous.text = `${previous.text}\n${turn.text}`;
+      continue;
+    }
+
+    turns.push({ role: turn.role, text: turn.text });
+  }
+
+  // AI 인사말로 시작하면 앞에 중립적인 무대 지시를 하나 끼워 넣는다.
+  if (turns[0]?.role === "model") {
+    turns.unshift({ role: "user", text: "[Session started.]" });
+  }
+
+  return turns;
 }
 
 export async function generate(options: GenerateOptions): Promise<string> {
   const endpoint =
     `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
+  const history = normalizeHistory(options.history ?? []);
+
   const body: Record<string, unknown> = {
-    contents: [{ role: "user", parts: [{ text: options.prompt }] }],
+    contents: [
+      ...history.map((turn) => ({
+        role: turn.role,
+        parts: [{ text: turn.text }],
+      })),
+      { role: "user", parts: [{ text: options.prompt }] },
+    ],
   };
 
   if (options.systemInstruction) {
